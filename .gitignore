@@ -1,0 +1,11 @@
+# まず全て無視
+*
+
+# ただし以下は追跡する
+!package.json
+!server.js
+!Readme.md
+!start-distviewer.sh
+
+# もしディレクトリ構造がある場合はディレクトリも例外指定が必要
+!.gitignore
