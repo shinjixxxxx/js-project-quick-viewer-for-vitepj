@@ -23,13 +23,99 @@ const START_DIR = path.resolve("./");
 // 現在の BASE_DIR（クリックで変化）
 let CURRENT_BASE = START_DIR;
 // 除外したいディレクトリ名
-const EXCLUDES = new Set([".git", ".deleted","node_modules"]);
+const EXCLUDES = new Set([".git", ".deleted","node_modules",".gitignore"]);
 
-
+function isExcluded(name) {
+  // 除外リストに一致、または ~ で終わるものを除外
+  if (EXCLUDES.has(name)) return true;
+  if (name.endsWith("~")) return true;
+  return false;
+}
 
 
 
 app.use(express.json());
+app.use(express.urlencoded({ extended: true })); // （任意）フォーム対応
+
+
+app.use("/__content/:dir", (req, res, next) => {
+  const raw = req.params.dir;
+  let dir; try { dir = decodeURIComponent(raw); } catch { dir = raw; }
+
+  if (EXCLUDES.has(dir)) return res.status(404).send("directory not found");
+
+  const base = path.join(CURRENT_BASE, dir);
+  if (!fs.existsSync(base) || !fs.statSync(base).isDirectory()) {
+    return res.status(404).send("directory not found");
+  }
+
+  // このハンドラ内の req.path は「残りのパス」
+  const subPath = req.path.replace(/^\/+/, ""); // "" なら直下
+
+  // ★ 直下に _index.html があるかを先に判定
+  const hasCustomIndex = fs.existsSync(path.join(base, "_index.html"));
+
+  // 直下アクセス：_index.html を最優先（dist より優先）
+  if (subPath === "" && hasCustomIndex) {
+    return res.sendFile(path.join(base, "_index.html"));
+  }
+
+  // ★ 重要：_index.html があれば “配下のリクエストも base を優先”
+  // そうでなければ dist 優先
+  const dist = path.join(base, "dist");
+  const root = hasCustomIndex
+    ? base
+    : (fs.existsSync(dist) && fs.statSync(dist).isDirectory()) ? dist : base;
+
+  const targetPath = path.join(root, subPath);
+
+  // ディレクトリ：index/_index があれば配信、無ければリンク一覧
+  if (fs.existsSync(targetPath) && fs.statSync(targetPath).isDirectory()) {
+    const idx = ["_index.html","index.html"].find(f => fs.existsSync(path.join(targetPath, f)));
+    if (idx) {
+      return express.static(root, { index: ["_index.html","index.html"], extensions: ["html"] })(req, res, next);
+    }
+
+    // const entries = fs.readdirSync(targetPath, { withFileTypes: true });
+    const entries = fs
+      .readdirSync(targetPath, { withFileTypes: true })
+      .filter(ent => !isExcluded(ent.name));
+
+
+
+    const baseUrl = `/__content/${encodeURIComponent(dir)}/${subPath ? encodeURI(subPath) + "/" : ""}`;
+    const rows = entries
+      .sort((a,b)=> (a.isDirectory()===b.isDirectory()) ? a.name.localeCompare(b.name) : (a.isDirectory()? -1:1))
+      .map(ent => {
+        const href = baseUrl + encodeURIComponent(ent.name) + (ent.isDirectory()? "/" : "");
+        const mark = ent.isDirectory() ? "📁" : "📄";
+        return `<div style="padding:2px 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+          <a href="${href}" style="text-decoration:none;color:#06c">${mark} ${ent.name}</a>
+        </div>`;
+      }).join("");
+    const upHref = baseUrl.replace(/[^/]+\/?$/, "");
+    const upLink = subPath ? `<div style="margin-bottom:6px;"><a href="${upHref}" style="color:#06c;">⬆ 上へ</a></div>` : "";
+
+    return res.send(`<!doctype html><meta charset="utf-8"><title>${dir}${subPath?" / "+subPath:""}</title>
+    <body style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; font-size:14px; margin:8px;">
+      <div style="max-width:480px;">
+        <div style="font-weight:600; margin-bottom:6px;">${dir}${subPath?" / "+subPath:""}</div>
+        ${upLink}
+        <div>${rows || "<em>（空のディレクトリ）</em>"}</div>
+      </div>
+    </body>`);
+  }
+
+  // ファイルはそのまま
+  if (fs.existsSync(targetPath) && fs.statSync(targetPath).isFile()) {
+    return res.sendFile(targetPath);
+  }
+
+  // それ以外 → 通常 static に委譲（拡張子補完など）
+  return express.static(root, { index: ["_index.html","index.html"], extensions: ["html"] })(req, res, next);
+});
+
+
 
 // 安全に子孫パスか判定
 const isSubPath = (child, parent) => {
@@ -69,8 +155,12 @@ app.get("/", (req, res) => {
       <div class="tile">
         <div class="label"><a href="/${enc}/">${label}</a></div>
         <iframe src="/__content/${enc}/" width="200" height="200" class="thumb"></iframe>
-        <button class="dot" title="このディレクトリをBASE_DIRにする" 
-                onclick="setBase('${enc}')">●</button>
+
+        
+        <button class="dot" title="このディレクトリをBASE_DIRにする"
+            onclick="event.preventDefault(); event.stopPropagation(); setBase('${enc}')">●</button>
+
+
       </div>
     `;
   }).join("");
@@ -84,12 +174,12 @@ app.get("/", (req, res) => {
   .tile{position:relative;display:inline-block;text-align:center}
   .label{width:200px;font-size:12px;line-height:1.3;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .label a{text-decoration:none;color:#06c}
-  .thumb{border:1px solid #ccc}
+  .thumb{border:1px solid #ccc; position:relative; z-index:1}
   .dot{
     position:absolute; right:6px; bottom:10px; 
     width:18px; height:18px; border-radius:50%;
     border:0; background:#333; color:#fff; cursor:pointer; font-size:11px; line-height:18px; padding:0;
-    opacity:.85
+    opacity:.85; z-index:5
   }
   .dot:hover{opacity:1}
   .up{
@@ -149,59 +239,6 @@ app.post("/api/go-up", (req, res) => {
   return res.sendStatus(200);
 });
 
-// ====== 実体配信（dist優先・indexなければリンク一覧） ======
-app.use("/__content/:dir", (req, res, next) => {
-  const raw = req.params.dir;
-  let dir; try { dir = decodeURIComponent(raw); } catch { dir = raw; }
-
-  const base = path.join(CURRENT_BASE, dir);
-  if (!fs.existsSync(base) || !fs.statSync(base).isDirectory()) {
-    return res.status(404).send("directory not found");
-  }
-
-  const dist = path.join(base, "dist");
-  const root = (fs.existsSync(dist) && fs.statSync(dist).isDirectory()) ? dist : base;
-
-  const subPath = decodeURIComponent(req.path.replace(/^\/__content\/[^/]+\/?/, ""));
-  const targetPath = path.join(root, subPath);
-
-  // ディレクトリ：index / _index が無ければリンク一覧
-  if (fs.existsSync(targetPath) && fs.statSync(targetPath).isDirectory()) {
-    const idx = ["index.html","_index.html"].map(f => path.join(targetPath, f)).find(p => fs.existsSync(p));
-    if (idx) return serveDistFirst(root)(req, res, next);
-
-    const entries = fs.readdirSync(targetPath, { withFileTypes: true });
-    const baseUrl = `/__content/${encodeURIComponent(dir)}/${subPath ? encodeURI(subPath) : ""}`;
-    const rows = entries
-      .sort((a,b)=> (a.isDirectory()===b.isDirectory()) ? a.name.localeCompare(b.name) : (a.isDirectory()? -1:1))
-      .map(ent => {
-        const href = baseUrl + encodeURIComponent(ent.name) + (ent.isDirectory()? "/" : "");
-        const mark = ent.isDirectory() ? "📁" : "📄";
-        return `<div style="padding:2px 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
-          <a href="${href}" style="text-decoration:none;color:#06c">${mark} ${ent.name}</a>
-        </div>`;
-      }).join("");
-    const upHref = baseUrl.replace(/[^/]+\/?$/, "");
-    const upLink = subPath ? `<div style="margin-bottom:6px;"><a href="${upHref}" style="color:#06c;">⬆ 上へ</a></div>` : "";
-
-    return res.send(`<!doctype html><meta charset="utf-8"><title>${dir}${subPath?" / "+subPath:""}</title>
-    <body style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; font-size:14px; margin:8px;">
-      <div style="max-width:480px;">
-        <div style="font-weight:600; margin-bottom:6px;">${dir}${subPath?" / "+subPath:""}</div>
-        ${upLink}
-        <div>${rows || "<em>（空のディレクトリ）</em>"}</div>
-      </div>
-    </body>`);
-  }
-
-  // ファイルはそのまま
-  if (fs.existsSync(targetPath) && fs.statSync(targetPath).isFile()) {
-    return res.sendFile(targetPath);
-  }
-
-  // それ以外は通常 static に委譲
-  return serveDistFirst(root)(req, res, next);
-});
 
 // 見た目URLはラッパー（/dir/ → フル画面 iframe）
 app.get("/:dir/", (req, res) => {
