@@ -3,7 +3,7 @@ set -euo pipefail
 
 WORKDIR="/dockerd"
 NODE="/usr/local/bin/node"   # ← `which node` で確認して絶対パスを書く
-LOG="/var/log/distviewer.log"
+LOG="/dockerd/distviewer.log"
 
 # 二重起動防止
 if pgrep -f "${WORKDIR}/server.js" >/dev/null 2>&1; then
